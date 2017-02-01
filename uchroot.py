@@ -4,13 +4,19 @@
    Base on: https://gist.github.com/cheshirekow/fe1451e245d1a0855ad3d1dca115aeca
 """
 
+# NOTE(josh): see http://man7.org/linux/man-pages/man5/subuid.5.html on
+# subordinate UIDs.
+# https://lwn.net/Articles/532593/
+
 import argparse
 import ctypes
 import os
+import pwd
 import json
 import re
 import subprocess
 import sys
+import time
 
 class FmtWrapper(object):
     """Wrap a file-like object with a callable taking format strings and 
@@ -160,6 +166,8 @@ def parse_config(config_path):
         sys.stderr.write(stripped_json_str)
         raise
 
+    config_dict['identity'] = config_dict.pop('identity', [0, 0])
+    config_dict['cwd'] = config_dict.pop('cwd', '/')
     exec_dict = config_dict.pop('exec', {})
     exec_dict['path'] = exec_dict.pop('path', DEFAULT_BIN)
     exec_dict['argv'] = exec_dict.pop('argv', DEFAULT_ARGV)
@@ -171,8 +179,61 @@ def parse_config(config_path):
     return config_dict
 
 
-def uchroot(rootfs=None, binds=None, qemu=None, emulate_root=False, 
-            exec_spec=None):
+def get_subid_range(subid_path, uid):   
+    """Return the subordinate user/group id and count for the given user."""
+    username = username = pwd.getpwuid(uid)[0]
+    with open(subid_path, 'r') as subuid:
+        for line in subuid:
+            subuid_name, subuid_min, subuid_count = line.strip().split(':')
+            if subuid_name == username:
+                return (int(subuid_min), int(subuid_count))
+            else:
+                try:
+                    subuid_uid = int(subuid_name)
+                    if subuid_uid == uid:
+                        return (int(subuid_min), int(subuid_count))
+                except ValueError:
+                    pass
+
+    raise fmt_raise(ValueError, "user {}({}) not found in subid file {}", 
+                    username, uid, subid_path)
+
+
+def write_id_map(id_map_path, id_outside, subid_range):
+    """Write uid_map or gid_map.
+       NOTE(josh): doesn't work. We need CAP_SETUID (CAP_SETGID) in the *parent*
+       namespace to be allowed to do this. Evidently, that is why there the
+       setuid-root newuidmap/newgidmap programs exist.
+    """
+    with open(id_map_path, 'wb') as id_map:
+        fmt_out("Writing : {} (fd={})\n", id_map_path, id_map.fileno())
+        fmt_file(id_map, "{id_inside} {id_outside} {count}\n", 
+                 id_inside=0, 
+                 id_outside=id_outside, 
+                 count=1)
+        fmt_file(id_map, "{id_inside} {id_outside} {count}\n", 
+                 id_inside=1, 
+                 id_outside=subid_range[0], 
+                 count=subid_range[1])
+
+def write_setgroups(pid):
+    setgroups_path = fmt_str('/proc/{}/setgroups', pid)
+    with open(setgroups_path, 'wb') as setgroups:
+        fmt_out("Writing : {} (fd={})\n", setgroups_path, setgroups.fileno())
+        fmt_file(setgroups, "deny\n")
+
+
+def set_id_map(idmap_bin, pid, id_outside, subid_range):
+    """Set uid_map or gid_map through subprocess calls."""
+    fmt_out("Calling {}\n", idmap_bin)
+    subprocess.check_call([fmt_str('/usr/bin/{}', idmap_bin), str(pid),
+                           '0', str(id_outside), '1',
+                           '1', str(subid_range[0]), str(subid_range[1])])
+
+
+
+def uchroot(read_fd, write_fd, rootfs=None, binds=None, 
+            qemu=None, identity=None, cwd=None, exec_spec=None):
     glibc = get_glibc()
     consts = get_constants()
 
@@ -180,7 +241,6 @@ def uchroot(rootfs=None, binds=None, qemu=None, emulate_root=False,
     gid = glibc.getgid()
 
     fmt_out("Before unshare, uid={}, gid={}\n", uid, gid).flush();
-
     # ---------------------------------------------------------------------
     #                     Create User Namespace
     # ---------------------------------------------------------------------
@@ -195,20 +255,15 @@ def uchroot(rootfs=None, binds=None, qemu=None, emulate_root=False,
     # write a uid/pid map
     pid = glibc.getpid()
     fmt_out("My pid: {}\n", pid).flush()
-    uid_map_path = fmt_str('/proc/{}/uid_map', pid)
-    with open(uid_map_path, 'wb') as uid_map:
-        fmt_out("Writing : {} (fd={})\n", uid_map_path, uid_map.fileno())
-        fmt_file(uid_map, "{uid} {uid} 1\n", uid=uid)
 
-    setgroups_path = fmt_str('/proc/{}/setgroups', pid)
-    with open(setgroups_path, 'wb') as setgroups:
-        fmt_out("Writing : {} (fd={})\n", setgroups_path, setgroups.fileno())
-        fmt_file(setgroups, "deny\n")
+    # Notify the helper that we have created the new namespace, and we need
+    # it to set our uid/gid map
+    fmt_out("Waiting for helper to set my uid/gid map").flush()
+    os.write(write_fd, "#")
 
-    gid_map_path = fmt_str('/proc/{}/gid_map', pid)
-    with open(gid_map_path, 'wb') as gid_map:
-        fmt_out("Writing : {} (fd={})\n", gid_map_path, gid_map.fileno())
-        fmt_file(gid_map, '{gid} {gid} 1\n', gid=gid)
+    # Wait for the helper to finish setting our uid/gid map
+    wait_result = os.read(read_fd, 1)
+    fmt_out("Helper has finished setting my uid/gid map").flush()
 
     # ---------------------------------------------------------------------
     #                     Create Mount Namespace
@@ -226,15 +281,18 @@ def uchroot(rootfs=None, binds=None, qemu=None, emulate_root=False,
     if err != 0 :
         fmt_err("Failed to chroot\n");
         sys.exit(1)
+
+    # Set the cwd
+    os.chdir(cwd)
     
     # Now drop admin in our namespace
-    err = glibc.setresuid(uid, uid, uid);
+    err = glibc.setresuid(identity[0], identity[0], identity[0]);
     if err != 0:
         fmt_err("Failed to set uid\n");
     
-    err = glibc.setresgid(gid, gid, gid);
+    err = glibc.setresgid(identity[1], identity[1], identity[1]);
     if(err) :
-        printf("Failed to set gid\n");
+        fmt_err("Failed to set gid\n");
 
     # and start the requested program
     exec_spec()
@@ -242,14 +300,41 @@ def uchroot(rootfs=None, binds=None, qemu=None, emulate_root=False,
     sys.exit(1)
 
 
+def uchroot_helper(chroot_pid):
+    """Helper process which exists outside the user namespace and writes our
+       uid/gid maps."""
+    uid = os.getuid()
+    gid = os.getgid()
+    subuid_range = get_subid_range('/etc/subuid', uid)
+    subgid_range = get_subid_range('/etc/subgid', uid)
+    
+    set_id_map('newuidmap', chroot_pid, uid, subuid_range)
+    write_setgroups(chroot_pid)
+    set_id_map('newgidmap', chroot_pid, gid, subgid_range)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('config_file', help='Path to config file') 
     args = parser.parse_args()
 
-    config = parse_config(args.config_file)
-    uchroot(**config)
+    helper_read_fd, primary_write_fd = os.pipe()
+    primary_read_fd, helper_write_fd = os.pipe()
+
+    parent_pid = os.getpid()
+    child_pid = os.fork()
+
+    if child_pid == 0:
+        # Wait for the primary to create her new namespace
+        wait_result = os.read(helper_read_fd, 1)
+        # Set the uid/gid map using the setuid helper programs
+        uchroot_helper(parent_pid)
+        # Inform the primary that we have finished setting her uid/gid map.
+        os.write(helper_write_fd, '#')
+    else:
+        config = parse_config(args.config_file)
+        uchroot(primary_read_fd, primary_write_fd, **config)
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

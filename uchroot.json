@@ -17,9 +17,11 @@
     // into the mount namespace of the jail
     "qemu" : "/usr/bin/qemu-arm-static", 
 
-    // If true, then the calling user id is mapped to the root user id and will
-    // appear to be root inside the jail
-    "emulate_root" : false,
+    // After entering the jail, assume this [uid, gid]. [0, 0] for root.
+    "identity" : [0, 0],
+
+    // Set the current working directory to this inside the jail
+    "cwd" : "/",
 
     // Execute the following command after chrooting into the jail
     "exec" : {
