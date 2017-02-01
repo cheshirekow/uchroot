@@ -10,6 +10,7 @@
 
 import argparse
 import ctypes
+import errno
 import os
 import pwd
 import json
@@ -17,6 +18,12 @@ import re
 import subprocess
 import sys
 import time
+
+class Path(str):
+    "A class to make it easier to create paths"
+
+    def __call__(self, *args):
+        return Path(os.path.join(self, *args))
 
 class FmtWrapper(object):
     """Wrap a file-like object with a callable taking format strings and 
@@ -61,13 +68,13 @@ def fmt_assert(assertion, fmt, *args, **kwargs):
 GET_CONSTANTS_PROGRAM = r"""
 #include <sched.h>
 #include <stdio.h>
+#include <sys/mount.h>
 
 #define PRINT_CONST(X) printf("  \"%s\" : %d,\n", #X, X)
 
 int main(int argc, char** argv) {
     printf("{\n");
-    PRINT_CONST(CLONE_NEWUSER);
-    PRINT_CONST(CLONE_NEWNS);
+    [replaceme]
     printf("  \"dummy\" : 0\n");
     printf("}\n");
 }
@@ -77,6 +84,7 @@ class Constants(object):
     def __init__(self):
         self.CLONE_NEWUSER = None
         self.CLONE_NEWNS = None
+        self.MS_BIND = None
 
 
 def get_constants() :
@@ -84,13 +92,20 @@ def get_constants() :
     src_path = '/tmp/print_constants.cc';
     bin_path = '/tmp/print_constants';
 
+    consts_obj = Constants()
+    stmts = [fmt_str('PRINT_CONST({});', name) for name in dir(consts_obj) 
+            if not name.startswith('_')]
+    replacement = '\n    '.join(stmts)
+    program_source = GET_CONSTANTS_PROGRAM.replace("[replaceme]", replacement)
+
     with open(src_path, 'wb') as outfile:
-        outfile.write(GET_CONSTANTS_PROGRAM)
+        outfile.write(program_source)
+
     subprocess.check_call(['gcc', '-o', bin_path, src_path])
     constants_str = subprocess.check_output([bin_path])
     consts_json = json.loads(constants_str)
 
-    consts_obj = Constants()
+    
     for key, value in consts_json.iteritems():
         if key != 'dummy':
             setattr(consts_obj, key, value)
@@ -101,7 +116,7 @@ def get_constants() :
 def get_glibc():
     """Return a ctypes wrapper around glibc."""
 
-    glibc = ctypes.cdll.LoadLibrary('libc.so.6')
+    glibc = ctypes.CDLL('libc.so.6', use_errno=True)
 
     # http://man7.org/linux/man-pages/man2/getuid.2.html
     glibc.getuid.restype = ctypes.c_uint # gid_t, uint32_t on my system
@@ -128,6 +143,12 @@ def get_glibc():
     glibc.setresuid.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_uint]
     glibc.setresgid.restype = ctypes.c_int
     glibc.setresgid.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_uint]
+
+    # http://man7.org/linux/man-pages/man2/mount.2.html
+    glibc.mount.restype = ctypes.c_int
+    glibc.mount.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
+                            ctypes.c_uint, # unsigned long
+                            ctypes.c_void_p]
 
     return glibc
 
@@ -234,6 +255,8 @@ def set_id_map(idmap_bin, pid, id_outside, subid_range):
 
 def uchroot(read_fd, write_fd, rootfs=None, binds=None, 
             qemu=None, identity=None, cwd=None, exec_spec=None):
+    rootfs = Path(rootfs)
+
     glibc = get_glibc()
     consts = get_constants()
 
@@ -258,12 +281,12 @@ def uchroot(read_fd, write_fd, rootfs=None, binds=None,
 
     # Notify the helper that we have created the new namespace, and we need
     # it to set our uid/gid map
-    fmt_out("Waiting for helper to set my uid/gid map").flush()
+    fmt_out("Waiting for helper to set my uid/gid map\n").flush()
     os.write(write_fd, "#")
 
     # Wait for the helper to finish setting our uid/gid map
     wait_result = os.read(read_fd, 1)
-    fmt_out("Helper has finished setting my uid/gid map").flush()
+    fmt_out("Helper has finished setting my uid/gid map\n").flush()
 
     # ---------------------------------------------------------------------
     #                     Create Mount Namespace
@@ -271,6 +294,27 @@ def uchroot(read_fd, write_fd, rootfs=None, binds=None,
     err = glibc.unshare(consts.CLONE_NEWNS)
     if err != 0:
         fmt_err('Failed to unshare mount namespace\n')
+
+    null_ptr = ctypes.POINTER(ctypes.c_char)()
+    for bind_spec in binds:
+        if ':' in bind_spec:
+            source, dest = bind_spec.split(':')
+        else:
+            source = bind_spec
+            dest = bind_spec
+
+        dest = dest.lstrip('/')
+        fmt_out('Binding: {} -> {} ', source, rootfs(dest))
+        result = glibc.mount(source, rootfs(dest), null_ptr, consts.MS_BIND, 
+                             null_ptr)
+        if result == -1:
+            err = ctypes.get_errno()
+            fmt_out('\n').flush()
+            fmt_err('  [{}]({}) {}\n', errno.errorcode.get(err, '??'), err, 
+                    os.strerror(err))
+        else:
+            fmt_out('OK\n')
+
 
     # ---------------------------------------------------------------------
     #                             Chroot
@@ -313,11 +357,7 @@ def uchroot_helper(chroot_pid):
     set_id_map('newgidmap', chroot_pid, gid, subgid_range)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('config_file', help='Path to config file') 
-    args = parser.parse_args()
-
+def uchroot_main(config_path):
     helper_read_fd, primary_write_fd = os.pipe()
     primary_read_fd, helper_write_fd = os.pipe()
 
@@ -332,8 +372,16 @@ def main():
         # Inform the primary that we have finished setting her uid/gid map.
         os.write(helper_write_fd, '#')
     else:
-        config = parse_config(args.config_file)
+        config = parse_config(config_path)
         uchroot(primary_read_fd, primary_write_fd, **config)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('config_file', help='Path to config file') 
+    args = parser.parse_args()
+    uchroot_main(args.config_file)
+   
 
 
 if __name__ == '__main__':

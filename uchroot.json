@@ -6,11 +6,13 @@
     // done inside a mount namespace and will not be reflected outside
     // the process tree started by the script. 
     "binds" : [
+        "/dev/pts",
         "/dev/urandom",
-        "/etc/resolv.conf",
-        "/home/skydio",
-        "/usr/bin/git",
-        "/usr/bin/gpg"
+        "/etc/group",
+        "/etc/passwd",
+        "/etc/resolv.conf" //,
+        // "/usr/bin/git",
+        // "/usr/bin/gpg" //,
     ],
 
     // If specified, indicates the path to a qemu instance that should be bound
