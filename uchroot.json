@@ -1,0 +1,39 @@
+{
+    // The directory to chroot into
+    "rootfs" : "/home/skydio/aircam/build/images/amd64_buildroot",
+
+    // List of paths to bind into the new root directory. These binds are
+    // done inside a mount namespace and will not be reflected outside
+    // the process tree started by the script. 
+    "binds" : [
+        "/dev/urandom",
+        "/etc/resolv.conf",
+        "/home/skydio",
+        "/usr/bin/git",
+        "/usr/bin/gpg"
+    ],
+
+    // If specified, indicates the path to a qemu instance that should be bound
+    // into the mount namespace of the jail
+    "qemu" : "/usr/bin/qemu-arm-static", 
+
+    // If true, then the calling user id is mapped to the root user id and will
+    // appear to be root inside the jail
+    "emulate_root" : false,
+
+    // Execute the following command after chrooting into the jail
+    "exec" : {
+        "path" : "/bin/bash",
+        "argv" : ["bash"],
+        "env" : {
+            "PATH" : [
+                "/usr/local/sbin",
+                "/usr/local/bin",
+                "/usr/sbin",
+                "/usr/bin",
+                "/sbin",
+                "/bin"
+            ]
+        }
+    }
+}
