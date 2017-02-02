@@ -181,12 +181,13 @@ def parse_config(config_path):
                 stripped_json_str += '\n'
 
     try:
-        config_dict = json.loads(stripped_json_str)
+        return json.loads(stripped_json_str)
     except (ValueError, KeyError):
         fmt_err('Failed to decode json:\n')
         sys.stderr.write(stripped_json_str)
         raise
 
+def process_config(config_dict):
     config_dict['identity'] = config_dict.pop('identity', [0, 0])
     config_dict['cwd'] = config_dict.pop('cwd', '/')
     exec_dict = config_dict.pop('exec', {})
@@ -357,7 +358,7 @@ def uchroot_helper(chroot_pid):
     set_id_map('newgidmap', chroot_pid, gid, subgid_range)
 
 
-def uchroot_main(config_path):
+def uchroot_main(config):
     helper_read_fd, primary_write_fd = os.pipe()
     primary_read_fd, helper_write_fd = os.pipe()
 
@@ -372,7 +373,7 @@ def uchroot_main(config_path):
         # Inform the primary that we have finished setting her uid/gid map.
         os.write(helper_write_fd, '#')
     else:
-        config = parse_config(config_path)
+        config = process_config(config)
         uchroot(primary_read_fd, primary_write_fd, **config)
 
 
@@ -380,7 +381,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('config_file', help='Path to config file') 
     args = parser.parse_args()
-    uchroot_main(args.config_file)
+    config = parse_config(args.config_file)
+    uchroot_main(config)
    
 
 

@@ -1,12 +1,12 @@
 {
     // The directory to chroot into
-    "rootfs" : "/home/skydio/aircam/build/images/amd64_buildroot",
+    "rootfs" : "/mnt/data0/rootfs_work/rootfs",
 
     // List of paths to bind into the new root directory. These binds are
     // done inside a mount namespace and will not be reflected outside
     // the process tree started by the script. 
     "binds" : [
-        "/dev/pts",
+        // "/dev/pts",
         "/dev/urandom",
         "/etc/group",
         "/etc/passwd",
@@ -31,13 +31,18 @@
         "argv" : ["bash"],
         "env" : {
             "PATH" : [
-                "/usr/local/sbin",
-                "/usr/local/bin",
+                // "/usr/local/sbin",
+                // "/usr/local/bin",
                 "/usr/sbin",
                 "/usr/bin",
                 "/sbin",
                 "/bin"
-            ]
+            ],
+            "DEBIAN_FRONTEND" : "noninteractive",
+            "DEBCONF_NONINTERACTIVE_SEEN" : "true",
+            "LC_ALL" : "C",
+            "LANGUAGE" : "C",
+            "LANG" : "C"
         }
     }
 }
