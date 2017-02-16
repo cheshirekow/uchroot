@@ -401,10 +401,15 @@ def uchroot(read_fd, write_fd, rootfs=None, binds=None,
     if qemu:
         dest = qemu.lstrip('/')
         make_sure_is_dir(os.path.dirname(rootfs(dest)), qemu)
+        fmt_out("Installing {}\n", qemu)
         with open(rootfs(dest), 'wb') as outfile:
             with open(qemu, 'rb') as infile:
-                for chunk in infile.read(1024 * 4):
+                chunk = infile.read(1024 * 4)
+                while chunk:
                     outfile.write(chunk)
+                    chunk = infile.read(1024 * 4)
+
+        os.chmod(rootfs(dest), 0o755)
 
     # ---------------------------------------------------------------------
     #                             Chroot

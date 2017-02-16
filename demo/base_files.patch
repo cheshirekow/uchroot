@@ -1,0 +1,16 @@
+--- var/lib/dpkg/info/base-files.postinst	2016-09-07 11:48:24.997337549 -0700
++++ var/lib/dpkg/info/base-files.postinst	2016-09-07 11:50:09.641334627 -0700
+@@ -23,6 +23,13 @@
+
+ migrate_directory() {
+   if [ ! -L $1 ]; then
++    if [ ! -z "`ls -A $1/`" ]; then
++      for x in $1/* $1/.[!.]* $1/..?*; do
++        if [ -e "$x" ]; then
++          mv -- "$x" $2/
++        fi
++      done
++    fi
+     rmdir $1
+     ln -s $2 $1
+   fi
