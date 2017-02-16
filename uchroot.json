@@ -22,6 +22,16 @@
     // After entering the jail, assume this [uid, gid]. [0, 0] for root.
     "identity" : [0, 0],
 
+    // uids in the namespace starting at 1 are mapped to uids outside the 
+    // namespace starting with this value and up to this many ids. Note that
+    // the uid range outside the namespace must lie within the current users
+    // allowed subordinate uids. See (or modify) /etc/subid for the range
+    // available to your user.
+    "uid_range" : [100000, 65536],
+
+    // Aame as uid_map above, but for gids.
+    "gid_range" : [100000, 65536],
+
     // Set the current working directory to this inside the jail
     "cwd" : "/",
 
@@ -30,6 +40,8 @@
         "path" : "/bin/bash",
         "argv" : ["bash"],
         "env" : {
+            // This environment variable is dealt with specially. The elements
+            // of the array are joined with pathsep and stored as PATH.
             "PATH" : [
                 // "/usr/local/sbin",
                 // "/usr/local/bin",
