@@ -17,6 +17,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 
 
 class Path(str):
@@ -100,9 +101,6 @@ def get_constants():
        the value of needed glibc constatns. Read the output of that program and
        store the value of constants in a Constants object. Return that object.
     """
-    # TODO(josh): tempfile
-    src_path = '/tmp/print_constants.cc'
-    bin_path = '/tmp/print_constants'
 
     consts_obj = Constants()
     stmts = [fmt_str('PRINT_CONST({});', name) for name in dir(consts_obj)
@@ -110,11 +108,21 @@ def get_constants():
     replacement = '\n    '.join(stmts)
     program_source = GET_CONSTANTS_PROGRAM.replace("[replaceme]", replacement)
 
-    with open(src_path, 'wb') as outfile:
+    with tempfile.NamedTemporaryFile(mode='wb', prefix='print_constants',
+                                     suffix='.cc', delete=False) as outfile:
+        src_path = outfile.name
         outfile.write(program_source)
 
+    with tempfile.NamedTemporaryFile(mode='wb', prefix='print_constants',
+                                     suffix='.cc', delete=False) as binfile:
+        bin_path = binfile.name
+
+    os.remove(bin_path)
     subprocess.check_call(['gcc', '-o', bin_path, src_path])
+    os.remove(src_path)
+
     constants_str = subprocess.check_output([bin_path])
+    os.remove(bin_path)
     consts_json = json.loads(constants_str)
 
     for key, value in consts_json.iteritems():
@@ -296,10 +304,10 @@ def make_sure_is_dir(need_dir, source):
     if not os.path.isdir(need_dir):
         if os.path.exists(need_dir):
             fmt_err("WARNING: removing rootfs bind target {} because it"
-                    " is not a directory", need_dir)
+                    " is not a directory\n", need_dir)
             os.remove(need_dir)
         fmt_err("WARNING: creating rootfs directory {} because it is "
-                " needed to bind mount.", need_dir, source)
+                " needed to bind mount.\n", need_dir, source)
         os.makedirs(need_dir)
 
 
@@ -310,7 +318,7 @@ def make_sure_is_file(need_path, source):
 
     if not os.path.exists(need_path):
         fmt_err("WARNING: creating rootfs regular file {} because it "
-                " is a requested mount-point for {}", need_path, source)
+                " is a requested mount-point for {}\n", need_path, source)
         with open(need_path, 'wb') as touchfile:
             touchfile.write('# written by uchroot.py')
 
