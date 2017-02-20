@@ -173,74 +173,6 @@ def get_glibc():
     return glibc
 
 
-class ExecSpec(object):
-    """Simple object to hold together the path, argument vector, and environment
-       of an exec call."""
-
-    def __init__(self, path, argv, env):
-        self.path = path
-        self.argv = argv
-        self.env = env
-
-    def __call__(self):
-        os.execve(self.path, self.argv, self.env)
-
-
-def parse_config(config_path):
-    """Open the config file as json, strip comments, load it and return the
-       resulting dictionary."""
-
-    stripped_json_str = ''
-
-    # NOTE(josh): strip comments out of the config file.
-    with open(config_path, 'rb') as infile:
-        for line in infile:
-            line = re.sub('//.*$', '', line).rstrip()
-            if line:
-                stripped_json_str += line
-                stripped_json_str += '\n'
-
-    try:
-        return json.loads(stripped_json_str)
-    except (ValueError, KeyError):
-        fmt_err('Failed to decode json:\n')
-        sys.stderr.write(stripped_json_str)
-        raise
-
-
-# Config defaults
-DEFAULT_BIN = '/bin/bash'
-DEFAULT_ARGV = ['bash']
-DEFAULT_PATH = ['/usr/sbin', '/usr/bin', '/sbin', '/bin']
-
-
-def process_config(config_dict):
-    """Process a config dictionary replacing missing values with defaults,
-       joining path components, etc."""
-
-    # Set default identity to root if not specific in config
-    config_dict['identity'] = config_dict.pop('identity', [0, 0])
-
-    # Set default working directory if not specified in config
-    config_dict['cwd'] = config_dict.pop('cwd', '/')
-
-    # Set default command binary, argument vector, and environment if not
-    # specified in config
-    exec_dict = config_dict.pop('exec', {})
-    exec_dict['path'] = exec_dict.pop('path', DEFAULT_BIN)
-    exec_dict['argv'] = exec_dict.pop('argv', DEFAULT_ARGV)
-    exec_env = exec_dict.pop('env', {})
-    exec_path = exec_env.pop('path', DEFAULT_PATH)
-
-    # Compose the path environment variable with a string join
-    exec_env['PATH'] = ':'.join(exec_path)
-    exec_dict['env'] = exec_env
-
-    # Replace the desired command dictionary with an object for convenience
-    config_dict['exec_spec'] = ExecSpec(**exec_dict)
-    return config_dict
-
-
 def get_subid_range(subid_path, uid):
     """Return the subordinate user/group id and count for the given user."""
 
@@ -323,11 +255,18 @@ def make_sure_is_file(need_path, source):
             touchfile.write('# written by uchroot.py')
 
 
-def uchroot(read_fd, write_fd, rootfs=None, binds=None,
-            qemu=None, identity=None, cwd=None, exec_spec=None):
+def uchroot_enter(read_fd, write_fd, rootfs=None, binds=None, qemu=None,
+                  identity=None, cwd=None):
     """Chroot into rootfs with a new user and mount namespace, then execute
        the desired command."""
     # pylint: disable=too-many-locals,too-many-statements
+
+    if not binds:
+        binds = []
+    if not identity:
+        identity = [0, 0]
+    if not cwd:
+        cwd = '/'
 
     rootfs = Path(rootfs)
 
@@ -433,11 +372,6 @@ def uchroot(read_fd, write_fd, rootfs=None, binds=None,
     if err:
         fmt_err("Failed to set gid\n")
 
-    # and start the requested program
-    exec_spec()
-    fmt_err("Failed to start a shell")
-    sys.exit(1)
-
 
 def validate_id_range(requested_range, allowed_range):
     """Check that the requested id range lies within the users allowed id
@@ -480,19 +414,17 @@ def set_userns_idmap(chroot_pid, uid_range, gid_range):
     set_id_map('newgidmap', chroot_pid, gid, gid_range)
 
 
-def uchroot_main(config):
-    """Fork off a subprocess to enter the chroot jail. Wait for it to enter
-       it's user namespace, and then call the setuid-root helper programs to
-       configure it's uid map."""
+def uchroot_main(rootfs, binds=None, qemu=None, identity=None, uid_range=None,
+                 gid_range=None, cwd=None):
+    """Fork off a helper subprocess, enter the chroot jail. Wait for the helper
+       to  call the setuid-root helper programs and configure the uid map of the
+       jail, then return."""
 
     # Pipes used to synchronize between the helper process and the chroot
     # process. Could also use eventfd, but this is simpler because python
     # already has os.pipe()
     helper_read_fd, primary_write_fd = os.pipe()
     primary_read_fd, helper_write_fd = os.pipe()
-
-    uid_range = config.pop('uid_range')
-    gid_range = config.pop('gid_range')
 
     parent_pid = os.getpid()
     child_pid = os.fork()
@@ -505,9 +437,78 @@ def uchroot_main(config):
         set_userns_idmap(parent_pid, uid_range, gid_range)
         # Inform the primary that we have finished setting its uid/gid map.
         os.write(helper_write_fd, '#')
+        sys.exit(0)
     else:
-        config = process_config(config)
-        uchroot(primary_read_fd, primary_write_fd, **config)
+        uchroot_enter(primary_read_fd, primary_write_fd, rootfs, binds, qemu,
+                      identity, cwd)
+
+
+def process_environment(env_dict):
+    """Given an environment dictionary, merge any lists with pathsep and return
+       the new dictionary."""
+    out_dict = {}
+    for key, value in env_dict.iteritems():
+        if isinstance(value, list):
+            out_dict[key] = ':'.join(value)
+        elif isinstance(value, str) or isinstance(value, unicode):
+            out_dict[key] = value
+        else:
+            out_dict[key] = str(value)
+    return out_dict
+
+
+# exec defaults
+DEFAULT_BIN = '/bin/bash'
+DEFAULT_ARGV = ['bash']
+DEFAULT_PATH = ['/usr/sbin', '/usr/bin', '/sbin', '/bin']
+
+
+class ExecSpec(object):
+    """Simple object to hold together the path, argument vector, and environment
+       of an exec call."""
+
+    def __init__(self, path=None, argv=None, env=None):
+        if path:
+            self.path = path
+            if not argv:
+                argv = [path.split('/')[-1]]
+        else:
+            self.path = DEFAULT_BIN
+
+        if argv:
+            self.argv = argv
+        else:
+            self.argv = DEFAULT_ARGV
+
+        if env:
+            self.env = process_environment(env)
+        else:
+            self.env = process_environment(dict(PATH=DEFAULT_PATH))
+
+    def __call__(self):
+        os.execve(self.path, self.argv, self.env)
+
+
+def parse_config(config_path):
+    """Open the config file as json, strip comments, load it and return the
+       resulting dictionary."""
+
+    stripped_json_str = ''
+
+    # NOTE(josh): strip comments out of the config file.
+    with open(config_path, 'rb') as infile:
+        for line in infile:
+            line = re.sub('//.*$', '', line).rstrip()
+            if line:
+                stripped_json_str += line
+                stripped_json_str += '\n'
+
+    try:
+        return json.loads(stripped_json_str)
+    except (ValueError, KeyError):
+        fmt_err('Failed to decode json:\n')
+        sys.stderr.write(stripped_json_str)
+        raise
 
 
 def main():
@@ -515,8 +516,15 @@ def main():
     parser.add_argument('config_file', help='Path to config file')
     args = parser.parse_args()
     config = parse_config(args.config_file)
-    uchroot_main(config)
+    exec_spec = ExecSpec(**config.pop('exec', {}))
 
+    # enter the jail
+    uchroot_main(**config)
+
+    # and start the requested program
+    exec_spec()
+    fmt_err("Failed to start a shell")
+    sys.exit(1)
 
 if __name__ == '__main__':
     sys.exit(main())
