@@ -489,6 +489,17 @@ class ExecSpec(object):
         os.execve(self.path, self.argv, self.env)
 
 
+class UChrootMain(object):
+    """Simple bind for subprocess prexec_fn."""
+
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+
+    def __call__(self):
+        uchroot_main(*self.args, **self.kwargs)
+
+
 def parse_config(config_path):
     """Open the config file as json, strip comments, load it and return the
        resulting dictionary."""
@@ -513,18 +524,26 @@ def parse_config(config_path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('-s', '--subprocess', action='store_true',
+                        help='use subprocess instead of exec')
     parser.add_argument('config_file', help='Path to config file')
     args = parser.parse_args()
     config = parse_config(args.config_file)
     exec_spec = ExecSpec(**config.pop('exec', {}))
 
-    # enter the jail
-    uchroot_main(**config)
+    if args.subprocess:
+        fmt_out('Using subprocess call\n')
+        subprocess.call(exec_spec.argv, executable=exec_spec.path,
+                        env=exec_spec.env, preexec_fn=UChrootMain(**config))
 
-    # and start the requested program
-    exec_spec()
-    fmt_err("Failed to start a shell")
-    sys.exit(1)
+    else:
+        # enter the jail
+        uchroot_main(**config)
+
+        # and start the requested program
+        exec_spec()
+        fmt_err("Failed to start a shell")
+        sys.exit(1)
 
 if __name__ == '__main__':
     sys.exit(main())
