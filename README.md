@@ -7,6 +7,10 @@ set-uid-root helper functions (on ubuntu, installed with the uidmap package).
 This requirement is not really necessary if you only need to enter the chroot
 jail with a single user id mapped.
 
+# Requirements
+
+Install `newuidmap` ubuntu package.
+
 # Example usage
 
 Let's create a simple ubuntu `trusty` `arm64` container that we can run under
