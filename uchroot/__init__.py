@@ -11,6 +11,7 @@ Based on: https://gist.github.com/cheshirekow/fe1451e245d1a0855ad3d1dca115aeca
 
 import ctypes
 import errno
+import inspect
 import logging
 import os
 import pwd
@@ -20,73 +21,7 @@ import subprocess
 import sys
 import tempfile
 
-# A very simple c-program to print the value of certain glibc
-# constants for the current system.
-GET_CONSTANTS_PROGRAM = r"""
-#include <sched.h>
-#include <stdio.h>
-#include <sys/mount.h>
-
-#define PRINT_CONST(X) printf("  \"%s\" : %d,\n", #X, X)
-
-int main(int argc, char** argv) {
-    printf("{\n");
-    [replaceme]
-    printf("  \"dummy\" : 0\n");
-    printf("}\n");
-}
-"""
-
-
-class Constants(object):
-  """A collection of glibc constants."""
-
-  def __init__(self):
-    # pylint: disable=invalid-name
-    self.CLONE_NEWUSER = 0x10000000
-    self.CLONE_NEWNS = 0x20000
-    self.MS_BIND = 0x1000
-
-
-def get_constants():
-  """
-  Write out the source for, compile, and run a simple c-program that prints
-  the value of needed glibc constants. Read the output of that program and
-  store the value of constants in a Constants object. Return that object.
-  """
-
-  consts_obj = Constants()
-  stmts = ['PRINT_CONST({});'.format(name) for name in dir(consts_obj)
-           if not name.startswith('_')]
-  replacement = '\n    '.join(stmts)
-  program_source = GET_CONSTANTS_PROGRAM.replace("[replaceme]", replacement)
-
-  with tempfile.NamedTemporaryFile(mode='wb', prefix='print_constants',
-                                   suffix='.cc', delete=False) as outfile:
-    src_path = outfile.name
-    outfile.write(program_source)
-
-  with tempfile.NamedTemporaryFile(mode='wb', prefix='print_constants',
-                                   suffix='.cc', delete=False) as binfile:
-    bin_path = binfile.name
-
-  try:
-    os.remove(bin_path)
-    subprocess.check_call(['gcc', '-o', bin_path, src_path])
-    os.remove(src_path)
-
-    constants_str = subprocess.check_output([bin_path])
-    os.remove(bin_path)
-    consts_json = json.loads(constants_str)
-
-    for key, value in consts_json.iteritems():
-      if key != 'dummy':
-        setattr(consts_obj, key, value)
-  except subprocess.CalledProcessError:
-    logging.warn('Failed to compile/execute program to get glibc constants.'
-                 ' Using baked-in values.')
-
-  return consts_obj
+VERSION = '0.1.0'
 
 
 def get_glibc():
@@ -129,13 +64,16 @@ def get_glibc():
                           ctypes.c_uint,  # unsigned long
                           ctypes.c_void_p]
 
+  glibc.CLONE_NEWUSER = 0x10000000
+  glibc.CLONE_NEWNS = 0x20000
+  glibc.MS_BIND = 0x1000
+
   return glibc
 
 
-def get_subid_range(subid_path, uid):
+def get_subid_range(subid_path, username, uid):
   """Return the subordinate user/group id and count for the given user."""
 
-  username = username = pwd.getpwuid(uid)[0]
   with open(subid_path, 'r') as subuid:
     for line in subuid:
       subuid_name, subuid_min, subuid_count = line.strip().split(':')
@@ -230,8 +168,6 @@ def enter(read_fd, write_fd, rootfs=None, binds=None, qemu=None, identity=None,
     cwd = '/'
 
   glibc = get_glibc()
-  consts = get_constants()
-
   uid = glibc.getuid()
   gid = glibc.getgid()
 
@@ -242,7 +178,7 @@ def enter(read_fd, write_fd, rootfs=None, binds=None, qemu=None, identity=None,
 
   # First, unshare the user namespace and assume admin capability in the
   # new namespace
-  err = glibc.unshare(consts.CLONE_NEWUSER)
+  err = glibc.unshare(glibc.CLONE_NEWUSER)
   if err != 0:
     raise OSError(err, "Failed to unshared user namespace", None)
 
@@ -262,13 +198,15 @@ def enter(read_fd, write_fd, rootfs=None, binds=None, qemu=None, identity=None,
   # ---------------------------------------------------------------------
   #                     Create Mount Namespace
   # ---------------------------------------------------------------------
-  err = glibc.unshare(consts.CLONE_NEWNS)
+  err = glibc.unshare(glibc.CLONE_NEWNS)
   if err != 0:
     logging.error('Failed to unshare mount namespace')
 
   null_ptr = ctypes.POINTER(ctypes.c_char)()
   for bind_spec in binds:
-    if ':' in bind_spec:
+    if isinstance(bind_spec, (list, tuple)):
+      source, dest = bind_spec
+    elif ':' in bind_spec:
       source, dest = bind_spec.split(':')
     else:
       source = bind_spec
@@ -286,7 +224,7 @@ def enter(read_fd, write_fd, rootfs=None, binds=None, qemu=None, identity=None,
     else:
       make_sure_is_file(rootfs_dest, source)
 
-    result = glibc.mount(source, rootfs_dest, null_ptr, consts.MS_BIND,
+    result = glibc.mount(source, rootfs_dest, null_ptr, glibc.MS_BIND,
                          null_ptr)
     if result == -1:
       err = ctypes.get_errno()
@@ -316,7 +254,6 @@ def enter(read_fd, write_fd, rootfs=None, binds=None, qemu=None, identity=None,
   if err != 0:
     logging.error("Failed to chroot")
     raise OSError(err, "Failed to chroot", rootfs)
-
 
   # Set the cwd
   os.chdir(cwd)
@@ -353,14 +290,15 @@ def set_userns_idmap(chroot_pid, uid_range, gid_range):
   """Writes uid/gid maps for the chroot process."""
   uid = os.getuid()
   gid = os.getgid()
+  username = pwd.getpwuid(uid)[0]
 
-  subuid_range = get_subid_range('/etc/subuid', uid)
+  subuid_range = get_subid_range('/etc/subuid', username, uid)
   if uid_range:
     validate_id_range(uid_range, subuid_range)
   else:
     uid_range = subuid_range
 
-  subgid_range = get_subid_range('/etc/subgid', uid)
+  subgid_range = get_subid_range('/etc/subgid', username, uid)
   if gid_range:
     validate_id_range(gid_range, subgid_range)
   else:
@@ -411,7 +349,7 @@ def process_environment(env_dict):
   for key, value in env_dict.iteritems():
     if isinstance(value, list):
       out_dict[key] = ':'.join(value)
-    elif isinstance(value, str) or isinstance(value, unicode):
+    elif isinstance(value, (str, unicode)):
       out_dict[key] = value
     else:
       out_dict[key] = str(value)
@@ -424,41 +362,117 @@ DEFAULT_ARGV = ['bash']
 DEFAULT_PATH = ['/usr/sbin', '/usr/bin', '/sbin', '/bin']
 
 
-class ExecSpec(object):
-  """Simple object to hold together the path, argument vector, and environment
-     of an exec call."""
+def serialize(obj):
+  """
+  Return a serializable representation of the object. If the object has an
+  `as_dict` method, then it will call and return the output of that method.
+  Otherwise return the object itself.
+  """
+  if hasattr(obj, 'as_dict'):
+    fun = getattr(obj, 'as_dict')
+    if callable(fun):
+      return fun()
 
-  def __init__(self, path=None, argv=None, env=None):
-    if path:
-      self.path = path
+  return obj
+
+
+class ConfigObject(object):
+  """
+  Provides simple serialization to a dictionary based on the assumption that
+  all args in the __init__() function are fields of this object.
+  """
+
+  @classmethod
+  def get_field_names(cls):
+    """
+    The order of fields in the tuple representation is the same as the order
+    of the fields in the __init__ function
+    """
+    argspec = inspect.getargspec(cls.__init__)
+    # NOTE(josh): args[0] is `self`
+    return argspec.args[1:]
+
+  def as_dict(self):
+    """
+    Return a dictionary mapping field names to their values only for fields
+    specified in the constructor
+    """
+    return {field: serialize(getattr(self, field))
+            for field in self.get_field_names()}
+
+
+def get_default(obj, default):
+  """
+  If obj is not `None` then return it. Otherwise return default.
+  """
+  if obj is None:
+    return default
+
+  return obj
+
+
+class Exec(ConfigObject):
+  """
+  Simple object to hold together the path, argument vector, and environment
+  of an exec call.
+  """
+
+  def __init__(self, exbin=None, argv=None, env=None, **_):
+    if exbin:
+      self.exbin = exbin
       if not argv:
-        argv = [path.split('/')[-1]]
+        argv = [exbin.split('/')[-1]]
     else:
-      self.path = DEFAULT_BIN
+      self.exbin = DEFAULT_BIN
 
     if argv:
       self.argv = argv
     else:
       self.argv = DEFAULT_ARGV
 
-    if env:
+    if env is not None:
       self.env = process_environment(env)
     else:
       self.env = process_environment(dict(PATH=DEFAULT_PATH))
 
   def __call__(self):
-    os.execve(self.path, self.argv, self.env)
+    return os.execve(self.exbin, self.argv, self.env)
+
+  def subprocess(self, preexec_fn=None):
+    return subprocess.call(self.argv, executable=self.exbin, env=self.env,
+                           preexec_fn=preexec_fn)
 
 
-class Main(object):
-  """Simple bind for subprocess prexec_fn."""
+class Main(ConfigObject):
+  """
+  Simple bind for subprocess prexec_fn.
+  """
 
-  def __init__(self, *args, **kwargs):
-    self.args = args
-    self.kwargs = kwargs
+  def __init__(self,
+               rootfs=None,
+               binds=None,
+               qemu=None,
+               identity=None,
+               uid_range=None,
+               gid_range=None,
+               cwd=None,
+               **_):
+    self.rootfs = rootfs
+    self.binds = get_default(binds, [])
+    self.qemu = qemu
+    self.identity = get_default(identity, (0, 0))
+
+    uid = os.getuid()
+    username = pwd.getpwuid(uid)[0]
+    self.uid_range = get_default(
+        uid_range, get_subid_range('/etc/subuid', username, uid))
+    self.gid_range = get_default(
+        gid_range, get_subid_range('/etc/subgid', username, uid))
+    self.cwd = get_default(cwd, '/')
 
   def __call__(self):
-    main(*self.args, **self.kwargs)
+    main(**self.as_dict())
+
 
 def parse_config(config_path):
   """

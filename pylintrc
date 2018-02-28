@@ -24,7 +24,7 @@ load-plugins=
 # A comma-separated list of package or module names from where C extensions may
 # be loaded. Extensions are loading into the active Python interpreter and may
 # run arbitrary code
-extension-pkg-whitelist=pylcm
+extension-pkg-whitelist=
 
 
 [MESSAGES CONTROL]
@@ -99,36 +99,18 @@ ignore-mixin-members=yes
 # List of classes names for which member attributes should not be checked
 # (useful for classes with attributes dynamically set).
 ignored-classes=
-    AttrDict,
-    AcPipeline,
     cairo,
-    cc_aircam_shared,
-    cc_camera,
-    cc_detection,
-    cc_frontend_registry,
-    cc_i2c_util,
-    cc_pipeline_util,
-    cc_skynet,
-    cc_skynet.Skynet,
-    Skynet,
-    cc_test_python_bridge,
-    cc_voxels,
-    ConfigProto,
+    clangdoc.cindex.TokenKind,
     cv2,
+    git_watch.inotify,
+    jinja2,
     matplotlib.cm,
-    NetParameter,
     numpy,
     numpy.random,
-    ParameterSet,
-    ptree,
-    RunInfo,
     scoped_session,
-    SolverParameter,
-    SolverParams,
     SQLAlchemy,
     SQLObject,
     tensorflow,
-    tools.dnn.tf.lazy_caffe,
     plotly.graph_objs,
     Workspace,
 
@@ -145,7 +127,7 @@ generated-members=REQUEST,acl_users,aq_parent,query
 [MISCELLANEOUS]
 
 # List of note tags to take in consideration, separated by a comma.
-notes=FIXME,XXX,TODO
+notes=FIXME,XXX,TODO,NOTE
 
 
 [BASIC]
