@@ -15,3 +15,10 @@ around a year in various incarnations. Hopefully it is useful to others.
   mounts are invisible outside the call to uchroot.
 * Optionally copy a qemu binary into the target rootfs before chrooting.
   This can be used to uchroot a foreign architecture rootfs.
+
+v0.1.1
+------
+
+* Assert newuidmap helper programs exist before forking for easier debug
+* Add config VARDOCS, argparse helpstrings, and --dump-config command line
+  options

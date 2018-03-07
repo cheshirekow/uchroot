@@ -14,14 +14,16 @@ import errno
 import inspect
 import logging
 import os
+import pprint
 import pwd
 import json
 import re
 import subprocess
 import sys
 import tempfile
+import textwrap
 
-VERSION = '0.1.0'
+VERSION = '0.1.1'
 
 
 def get_glibc():
@@ -315,6 +317,10 @@ def main(rootfs, binds=None, qemu=None, identity=None, uid_range=None,
      to  call the setuid-root helper programs and configure the uid map of the
      jail, then return."""
 
+  for idmap_bin in ['newuidmap', 'newgidmap']:
+    assert os.path.exists('/usr/bin/{}'.format(idmap_bin)), \
+        "Missing required binary '{}'".format(idmap_bin)
+
   # Pipes used to synchronize between the helper process and the chroot
   # process. Could also use eventfd, but this is simpler because python
   # already has os.pipe()
@@ -388,9 +394,9 @@ class ConfigObject(object):
     The order of fields in the tuple representation is the same as the order
     of the fields in the __init__ function
     """
-    argspec = inspect.getargspec(cls.__init__)
+
     # NOTE(josh): args[0] is `self`
-    return argspec.args[1:]
+    return inspect.getargspec(cls.__init__).args[1:]
 
   def as_dict(self):
     """
@@ -495,3 +501,63 @@ def parse_config(config_path):
   except (ValueError, KeyError):
     logging.error('Failed to decode json:\n%s', stripped_json_str)
     raise
+
+
+VARDOCS = {
+    "rootfs": "The directory to chroot into",
+    "binds":
+    """
+List of paths to bind into the new root directory. These binds are
+done inside a mount namespace and will not be reflected outside
+the process tree started by the script.
+""",
+    "qemu":
+    """
+If specified, indicates the path to a qemu instance that should be bound
+into the mount namespace of the jail
+""",
+    "identity":
+    "After entering the jail, assume this [uid, gid]. (0, 0) for root.",
+    "uid_range":
+    """
+uids in the namespace starting at 1 are mapped to uids outside the
+namespace starting with this value and up to this many ids. Note that
+the uid range outside the namespace must lie within the current users
+allowed subordinate uids. See (or modify) /etc/subid for the range
+available to your user.
+""",
+    "gid_range":
+    "Same as uid_map above, but for gids.",
+    "cwd": "Set the current working directory to this inside the jail",
+    "excbin": "The path of the program to execute",
+    "argv": "The argument vector to expose as argv,argc to the called process",
+    "env":
+    """
+The environment of the called process. Use an empty dictionary for an
+empty environment, or None to use the host environment.
+Any environment variable encountered as a list will be join()ed using
+path separator (':')
+""",
+}
+
+
+def dump_config(outfile):
+  """
+  Dump the default configuration to ``outfile``.
+  """
+
+  config = Main().as_dict()
+  config.update(Exec().as_dict())
+
+  ppr = pprint.PrettyPrinter(indent=2)
+  fieldnames = Main.get_field_names() + Exec.get_field_names()
+  for key in fieldnames:
+    helptext = VARDOCS.get(key, None)
+    if helptext:
+      for line in textwrap.wrap(helptext, 78):
+        outfile.write('# ' + line + '\n')
+    value = config[key]
+    if isinstance(value, dict):
+      outfile.write('{} = {}\n\n'.format(key, json.dumps(value, indent=2)))
+    else:
+      outfile.write('{} = {}\n\n'.format(key, ppr.pformat(value)))
