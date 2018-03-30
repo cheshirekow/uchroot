@@ -22,3 +22,10 @@ v0.1.1
 * Assert newuidmap helper programs exist before forking for easier debug
 * Add config VARDOCS, argparse helpstrings, and --dump-config command line
   options
+
+v0.1.2
+------
+
+* Add argparse remainder so that argv can be specified more conveniently in
+  command line execution.
+* Increase information included in warning of mount failure

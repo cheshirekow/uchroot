@@ -75,6 +75,9 @@ def main():
 
   parser.add_argument('rootfs', nargs='?',
                       help='path of the rootfs to enter')
+  parser.add_argument('remainder', metavar='ARGV',
+                      nargs=argparse.REMAINDER,
+                      help='command and arguments')
   args = parser.parse_args()
 
   if args.dump_config:
@@ -87,6 +90,11 @@ def main():
     with io.open(args.config, encoding='utf8') as infile:
       # pylint: disable=W0122
       exec(infile.read(), config)
+
+  if args.remainder:
+    if args.argv is None:
+      args.argv = []
+    args.argv.extend(args.remainder)
 
   for key, value in vars(args).items():
     if value is not None and key in config:

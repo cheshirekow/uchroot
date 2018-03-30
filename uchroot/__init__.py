@@ -23,7 +23,7 @@ import sys
 import tempfile
 import textwrap
 
-VERSION = '0.1.1'
+VERSION = '0.1.2'
 
 
 def get_glibc():
@@ -226,11 +226,17 @@ def enter(read_fd, write_fd, rootfs=None, binds=None, qemu=None, identity=None,
     else:
       make_sure_is_file(rootfs_dest, source)
 
-    result = glibc.mount(source, rootfs_dest, null_ptr, glibc.MS_BIND,
-                         null_ptr)
+    if source.lstrip('/') == 'proc':
+      # NOTE(josh): user isn't allowed to mount proc
+      result = glibc.mount(source, rootfs_dest, "proc", 0,
+                           null_ptr)
+    else:
+      result = glibc.mount(source, rootfs_dest, null_ptr, glibc.MS_BIND,
+                           null_ptr)
     if result == -1:
       err = ctypes.get_errno()
-      logging.warn('[%s](%d) %s', errno.errorcode.get(err, '??'), err,
+      logging.warn('Failed to mount %s -> %s [%s](%d) %s',
+                   source, rootfs_dest, errno.errorcode.get(err, '??'), err,
                    os.strerror(err))
 
   if qemu:
@@ -442,9 +448,11 @@ class Exec(ConfigObject):
       self.env = process_environment(dict(PATH=DEFAULT_PATH))
 
   def __call__(self):
+    logging.debug('Executing %s', self.exbin)
     return os.execve(self.exbin, self.argv, self.env)
 
   def subprocess(self, preexec_fn=None):
+    logging.debug('Executing %s', self.exbin)
     return subprocess.call(self.argv, executable=self.exbin, env=self.env,
                            preexec_fn=preexec_fn)
 

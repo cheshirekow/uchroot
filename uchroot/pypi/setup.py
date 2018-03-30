@@ -2,7 +2,7 @@ import io
 from setuptools import setup
 
 GITHUB_URL = 'https://github.com/cheshirekow/uchroot'
-VERSION = '0.1.1'
+VERSION = '0.1.2'
 
 with io.open('README.rst', encoding='utf8') as infile:
   long_description = infile.read()
