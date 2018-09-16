@@ -2,7 +2,30 @@
 Changelog
 =========
 
+-----------
+v0.1 series
+-----------
+
+v0.1.3
 ------
+
+* Intercept requests for /proc mount and use the MS_REC flag on those
+* "allow" `setgroups` as it is now used by apt-get
+
+v0.1.2
+------
+
+* Add argparse remainder so that argv can be specified more conveniently in
+  command line execution.
+* Increase information included in warning of mount failure
+
+v0.1.1
+------
+
+* Assert newuidmap helper programs exist before forking for easier debug
+* Add config VARDOCS, argparse helpstrings, and --dump-config command line
+  options
+
 v0.1.0
 ------
 
@@ -15,17 +38,3 @@ around a year in various incarnations. Hopefully it is useful to others.
   mounts are invisible outside the call to uchroot.
 * Optionally copy a qemu binary into the target rootfs before chrooting.
   This can be used to uchroot a foreign architecture rootfs.
-
-v0.1.1
-------
-
-* Assert newuidmap helper programs exist before forking for easier debug
-* Add config VARDOCS, argparse helpstrings, and --dump-config command line
-  options
-
-v0.1.2
-------
-
-* Add argparse remainder so that argv can be specified more conveniently in
-  command line execution.
-* Increase information included in warning of mount failure

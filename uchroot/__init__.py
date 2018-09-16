@@ -23,7 +23,7 @@ import sys
 import tempfile
 import textwrap
 
-VERSION = '0.1.2'
+VERSION = '0.1.3'
 
 
 def get_glibc():
@@ -69,6 +69,7 @@ def get_glibc():
   glibc.CLONE_NEWUSER = 0x10000000
   glibc.CLONE_NEWNS = 0x20000
   glibc.MS_BIND = 0x1000
+  glibc.MS_REC = 0x4000
 
   return glibc
 
@@ -112,7 +113,9 @@ def write_setgroups(pid):
   setgroups_path = '/proc/{}/setgroups'.format(pid)
   with open(setgroups_path, 'wb') as setgroups:
     logging.debug("Writing : %s (fd=%d)\n", setgroups_path, setgroups.fileno())
-    setgroups.write("deny\n")
+    # NOTE(josh): was previously "deny", but apt-get calls this so we must
+    # allow it if we want to use apt-get. Look into this more.
+    setgroups.write("allow\n")
 
 
 def set_id_map(idmap_bin, pid, id_outside, subid_range):
@@ -227,9 +230,10 @@ def enter(read_fd, write_fd, rootfs=None, binds=None, qemu=None, identity=None,
       make_sure_is_file(rootfs_dest, source)
 
     if source.lstrip('/') == 'proc':
-      # NOTE(josh): user isn't allowed to mount proc
-      result = glibc.mount(source, rootfs_dest, "proc", 0,
-                           null_ptr)
+      # NOTE(josh): user isn't allowed to mount proc without MS_REC, see
+      # https://stackoverflow.com/a/23435317
+      result = glibc.mount(source, rootfs_dest, "proc",
+                           glibc.MS_REC | glibc.MS_BIND, null_ptr)
     else:
       result = glibc.mount(source, rootfs_dest, null_ptr, glibc.MS_BIND,
                            null_ptr)

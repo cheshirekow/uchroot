@@ -24,6 +24,7 @@ int main(int argc, char** argv) {
     PRINT_CONST(CLONE_NEWUSER);
     PRINT_CONST(CLONE_NEWNS);
     PRINT_CONST(MS_BIND);
+    PRINT_CONST(MS_REC);
     printf("  \"dummy\" : 0\n");
     printf("}\n");
 }
