@@ -10,32 +10,37 @@ jail with a single user id mapped.
 """
 
 import argparse
+import inspect
 import io
 import logging
+import os
 import sys
 
 import uchroot
+
+logger = logging.getLogger(__name__)
+
+if sys.version_info >= (3, 0, 0):
+  STRING_TYPES = (str,)
+else:
+  STRING_TYPES = (str, unicode)
 
 
 def parse_bool(string):
   if string.lower() in ('y', 'yes', 't', 'true', '1', 'yup', 'yeah', 'yada'):
     return True
-  elif string.lower() in ('n', 'no', 'f', 'false', '0', 'nope', 'nah', 'nada'):
+  if string.lower() in ('n', 'no', 'f', 'false', '0', 'nope', 'nah', 'nada'):
     return False
 
-  logging.warn("Ambiguous truthiness of string '%s' evalutes to 'FALSE'",
-               string)
+  logger.warning("Ambiguous truthiness of string '%s' evalutes to 'FALSE'",
+                 string)
   return False
 
 
-def main():
-  format_str = '%(levelname)-4s %(filename)s[%(lineno)-3s] : %(message)s'
-  logging.basicConfig(level=logging.INFO,
-                      format=format_str,
-                      datefmt='%Y-%m-%d %H:%M:%S',
-                      filemode='w')
-
-  parser = argparse.ArgumentParser(description=__doc__)
+def setup_parser(parser, config):
+  """
+  Configure argparse object
+  """
   parser.add_argument('-v', '--version', action='version',
                       version=uchroot.VERSION)
   parser.add_argument('-l', '--log-level', default='info',
@@ -47,9 +52,6 @@ def main():
   parser.add_argument('--dump-config', action='store_true',
                       help='Dump default config and exit')
 
-  config = uchroot.Main().as_dict()
-  config.update(uchroot.Exec().as_dict())
-
   for key, value in config.items():
     helpstr = uchroot.VARDOCS.get(key, None)
     if key == 'rootfs':
@@ -59,18 +61,25 @@ def main():
     elif isinstance(value, bool):
       parser.add_argument('--' + key.replace('_', '-'), nargs='?', default=None,
                           const=True, type=parse_bool, help=helpstr)
-    elif isinstance(value, (str, unicode, int, float)) or value is None:
+    elif isinstance(value, STRING_TYPES + (int, float)) or value is None:
       parser.add_argument('--' + key.replace('_', '-'))
     # NOTE(josh): argparse behavior is that if the flag is not specified on
     # the command line the value will be None, whereas if it's specified with
     # no arguments then the value will be an empty list. This exactly what we
     # want since we can ignore `None` values.
-    elif isinstance(value, (list, tuple)):
+    elif isinstance(value, list):
       if value:
         argtype = type(value[0])
       else:
         argtype = None
       parser.add_argument('--' + key.replace('_', '-'), nargs='*',
+                          type=argtype, help=helpstr)
+    elif isinstance(value, tuple):
+      if value:
+        argtype = type(value[0])
+      else:
+        argtype = None
+      parser.add_argument('--' + key.replace('_', '-'), nargs=len(value),
                           type=argtype, help=helpstr)
 
   parser.add_argument('rootfs', nargs='?',
@@ -78,18 +87,35 @@ def main():
   parser.add_argument('remainder', metavar='ARGV',
                       nargs=argparse.REMAINDER,
                       help='command and arguments')
-  args = parser.parse_args()
+
+
+def reusable_main(argv):
+  config = uchroot.Main().as_dict()
+  config.update({"exbin": None, "argv": None, "env": None})
+  parser = argparse.ArgumentParser(description=__doc__)
+  setup_parser(parser, config)
+  args = parser.parse_args(argv)
+  logger.setLevel(getattr(logging, args.log_level.upper()))
+
+  configpath = None
+  if args.config:
+    configpath = args.config
+  elif args.rootfs is not None:
+    for tryfile in [".uchroot.py", ".uchroot.cfg"]:
+      trypath = os.path.join(args.rootfs, tryfile)
+      if os.path.exists(trypath):
+        configpath = trypath
+        logger.info("autoloading config from %s", configpath)
+        break
+
+  if configpath:
+    with io.open(configpath, encoding='utf8') as infile:
+      # pylint: disable=W0122
+      exec(infile.read(), config)
 
   if args.dump_config:
     uchroot.dump_config(sys.stdout)
     sys.exit(0)
-
-  logging.getLogger().setLevel(getattr(logging, args.log_level.upper()))
-
-  if args.config:
-    with io.open(args.config, encoding='utf8') as infile:
-      # pylint: disable=W0122
-      exec(infile.read(), config)
 
   if args.remainder:
     if args.argv is None:
@@ -102,17 +128,20 @@ def main():
 
   knownkeys = uchroot.Main.get_field_names() + uchroot.Exec.get_field_names()
   unknownkeys = []
-  for key in config:
+  for key, value in config.items():
     if key.startswith('_'):
       continue
 
     if key in knownkeys:
       continue
 
+    if inspect.ismodule(value):
+      continue
+
     unknownkeys.append(key)
 
   if unknownkeys:
-    logging.warn("Unrecognized config variables: %s", ", ".join(unknownkeys))
+    logger.warning("Unrecognized config variables: %s", ", ".join(unknownkeys))
 
   mainobj = uchroot.Main(**config)
   execobj = uchroot.Exec(**config)
@@ -124,8 +153,18 @@ def main():
     mainobj()
     # and start the requested program
     execobj()
-    logging.error("Failed to start a shell")
-    return 1
+    logger.error("Failed to start a shell")
+
+  return 1
+
+
+def main():
+  format_str = '%(levelname)-4s %(filename)s[%(lineno)-3s] : %(message)s'
+  logging.basicConfig(level=logging.INFO,
+                      format=format_str,
+                      datefmt='%Y-%m-%d %H:%M:%S',
+                      filemode='w')
+  return reusable_main(sys.argv[1:])
 
 
 if __name__ == '__main__':

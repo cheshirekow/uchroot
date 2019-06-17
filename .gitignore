@@ -1,4 +1,3 @@
-
 *.pyc
 *.o
 *.so
@@ -15,3 +14,18 @@
 # python packaging
 *.egg-info/
 dist/
+
+# pyces build
+.pyces-out
+
+# jupyter autosaves
+.ipynb_checkpoints
+
+# bazel poop
+bazel-*
+
+# vscode poop
+.vscode/ipch
+
+# node package manager
+node_modules

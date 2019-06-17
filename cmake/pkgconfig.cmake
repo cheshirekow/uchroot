@@ -1,6 +1,8 @@
 # Porcelain tools for using pkg config. Better than cmake's builtins.
 
-# Execute pkg-config and store flags in the cache
+# Execute pkg-config and store flags in the cache. Sets the variable
+# `pkg_errno` in the parent scope to the return value of the subprocess
+# call.
 function(_pkg_query outvar arg)
   execute_process(COMMAND pkg-config --cflags-only-I ${arg}
                   RESULT_VARIABLE _pkg_err
@@ -10,7 +12,13 @@ function(_pkg_query outvar arg)
     set(pkg_errno 1 PARENT_SCOPE)
     return()
   endif()
-  set(pkg_${outvar}_includedirs ${_pkg_out} CACHE STRING
+
+  # Strip "-I" from include directories in the form of "-I/path/to"
+  string(REGEX REPLACE "-I" "" _include_dirs "${_pkg_out}")
+  # Convert space-separated list to semicolon-separated cmake-list
+  string(REGEX REPLACE " +" ";" _include_list "${_include_dirs}")
+
+  set(pkg_${outvar}_includedirs ${_include_list} CACHE STRING
       "include directories for ${outvar}" FORCE)
 
   execute_process(COMMAND pkg-config --cflags-only-other ${arg}
@@ -56,7 +64,11 @@ function(_pkg_query outvar arg)
 endfunction()
 
 # Execute pkg-config for each name in the list
+# Usage _pkg_query_loop(<canonical_name> [<alt1> [<alt2> [...]]])
 function(_pkg_query_loop name)
+  if(pkg_${outvar}_found)
+    return()
+  endif()
   set(outvar ${name})
   set(names ${ARGN})
   if(NOT names)
@@ -164,8 +176,14 @@ function(target_pkg_depends target pkg0)
     endif()
     if(pkg_${pkgname}_libdirs)
       get_target_property(lflags_ ${target} LINK_FLAGS)
-      list(APPEND lflags_ ${pkg_${pkgname}_lflags})
-      set_target_properties(${target} PROPERTIES LINK_FLAGS ${lflags_})
+      if(lflags_)
+        list(APPEND lflags_ ${pkg_${pkgname}_lflags})
+        set_target_properties(${target} PROPERTIES LINK_FLAGS ${lflags_})
+      else()
+        set_target_properties(${target} PROPERTIES LINK_FLAGS
+                              ${pkg_${pkgname}_lflags})
+      endif()
+
     endif()
     if(pkg_${pkgname}_libs)
       # Passthrough options like INTERFACE|PUBLIC|PRIVATE and

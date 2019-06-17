@@ -6,6 +6,19 @@ Changelog
 v0.1 series
 -----------
 
+v0.1.4
+------
+
+* remove newlines from log messages
+* add inotify and signalfd apis to glibc ctypes wrapper
+* if binary executable is not specified but argument vector is specified, then
+  use first element of argument vector as binary executable
+* if binary executable starts with forward slash, don't use use exec version
+  that does path lookup
+* update dump_constants helper to output in python, json, or human format
+* automatically load config file from the root of the target filesystem
+* update documentation theme to something based on rtd
+
 v0.1.3
 ------
 

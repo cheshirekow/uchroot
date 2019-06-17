@@ -3,16 +3,19 @@
 # Create format and lint rules for module files
 #
 # usage:
+# ~~~
 # format_and_lint(module
 #                 bar.h bar.cc
 #                 CMAKE CMakeLists.txt test/CMakeLists.txt
 #                 CC foo.h foo.cc
 #                 PY foo.py)
-#
+# ~~~
+
 # Will create rules `${module}_lint` and `${module}_format` using the standard
 # code formatters and lint checkers for the appropriate language. These
 # tools are:
 #
+# ~~~
 # CMAKE:
 #   formatter: cmake-format
 #
@@ -23,11 +26,12 @@
 # PYTHON:
 #   formatter: autopep8
 #   linter: pylint
-#
+# ~~~
 function(format_and_lint module)
   set(cmake_files_)
   set(cc_files_)
   set(py_files_)
+  set(js_files_)
   set(unknown_files_)
   set(state_ "AUTO")
 
@@ -45,6 +49,8 @@ function(format_and_lint module)
           list(APPEND py_files_ ${arg})
         elseif(arg MATCHES ".*\.(cc|h)")
           list(APPEND cc_files_ ${arg})
+        elseif(arg MATCHES ".*\.js(\.tpl)?")
+          list(APPEND js_files_ ${arg})
         else()
           list(APPEND unknown_files_ ${arg})
         endif()
@@ -62,18 +68,39 @@ function(format_and_lint module)
   set(fmtcmds_)
   set(depfiles_)
   if(cmake_files_)
-    list(APPEND fmtcmds_ COMMAND python -Bm cmake_format -i ${cmake_files_})
-    list(APPEND depfiles_ ${cmake_files_})
+    list(APPEND fmtcmds_ COMMAND env PYTHONPATH=${CMAKE_SOURCE_DIR}
+                                 python -Bm cmake_format -i ${cmake_files_})
+    list(APPEND depfiles_ ${cmake_files_}
+                          ${CMAKE_SOURCE_DIR}/.cmake-format.py)
   endif()
   if(cc_files_)
-    list(APPEND fmtcmds_ COMMAND clang-format -style file -i ${cc_files_})
+    list(APPEND fmtcmds_ COMMAND clang-format-6.0 -style file -i ${cc_files_})
+    list(APPEND lntcmds_
+         COMMAND clang-tidy-6.0 -p ${CMAKE_BINARY_DIR} ${cc_files_})
     list(APPEND lntcmds_ COMMAND cpplint ${cc_files_})
-    list(APPEND depfiles_ ${cc_files_})
+    list(APPEND depfiles_ ${cc_files_}
+                          ${CMAKE_SOURCE_DIR}/.clang-format
+                          ${CMAKE_SOURCE_DIR}/CPPLINT.cfg)
   endif()
   if(py_files_)
     list(APPEND fmtcmds_ COMMAND autopep8 -i ${py_files_})
-    list(APPEND lntcmds_ COMMAND pylint ${py_files_})
-    list(APPEND depfiles_ ${py_files_})
+    list(APPEND lntcmds_ COMMAND env PYTHONPATH=${CMAKE_SOURCE_DIR}
+                                 pylint ${py_files_})
+    # NOTE(josh): flake8 tries to use semaphores which fail in our containers
+    # https://bugs.python.org/issue3770 (probably due to /proc/shmem or
+    # something not being mounted)
+    list(APPEND lntcmds_ COMMAND env PYTHONPATH=${CMAKE_SOURCE_DIR}
+                                 flake8 --jobs 1 ${py_files_})
+    list(APPEND depfiles_ ${py_files_}
+                          ${CMAKE_SOURCE_DIR}/.flake8
+                          ${CMAKE_SOURCE_DIR}/.pep8
+                          ${CMAKE_SOURCE_DIR}/pylintrc)
+  endif()
+  if(js_files_)
+    # list(APPEND fmtcmds_ COMMAND esformat ${js_files_})
+    list(APPEND lntcmds_ COMMAND eslint ${js_files_})
+    list(APPEND depfiles_ ${js_files_}
+                          ${CMAKE_SOURCE_DIR}/.eslintrc.js)
   endif()
 
   set(fmtstamp_ ${CMAKE_CURRENT_BINARY_DIR}/${module}_format.stamp)

@@ -23,7 +23,14 @@ import sys
 import tempfile
 import textwrap
 
-VERSION = '0.1.3'
+VERSION = '0.1.4'
+
+if sys.version_info < (3, 0, 0):
+  STRING_TYPES = (str, unicode)
+else:
+  STRING_TYPES = (str,)
+
+logger = logging.getLogger(__name__)
 
 
 def get_glibc():
@@ -66,10 +73,46 @@ def get_glibc():
                           ctypes.c_uint,  # unsigned long
                           ctypes.c_void_p]
 
-  glibc.CLONE_NEWUSER = 0x10000000
+  # http://man7.org/linux/man-pages/man2/inotify_init.2.html
+  glibc.inotify_init.restype = ctypes.c_int
+  glibc.inotify_init.argtypes = []
+
+  glibc.inotify_init1.restype = ctypes.c_int
+  glibc.inotify_init1.argtypes = [ctypes.c_int]
+
+  # http://man7.org/linux/man-pages/man2/inotify_add_watch.2.html
+  glibc.inotify_add_watch.restype = ctypes.c_int
+  glibc.inotify_add_watch.argtypes = [
+      ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+
+  # http://man7.org/linux/man-pages/man2/inotify_rm_watch.2.html
+  glibc.inotify_rm_watch.restype = ctypes.c_int
+  glibc.inotify_rm_watch.argtypes = [ctypes.c_int, ctypes.c_int]
+
+  # http://man7.org/linux/man-pages/man2/signalfd.2.html
+  glibc.signalfd.restype = ctypes.c_int
+  glibc.signalfd.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+
   glibc.CLONE_NEWNS = 0x20000
+  glibc.CLONE_NEWUSER = 0x10000000
+  glibc.IN_ACCESS = 0x1
+  glibc.IN_ATTRIB = 0x4
+  glibc.IN_CLOEXEC = 0x80000
+  glibc.IN_CLOSE_NOWRITE = 0x10
+  glibc.IN_CLOSE_WRITE = 0x8
+  glibc.IN_CREATE = 0x100
+  glibc.IN_DELETE = 0x200
+  glibc.IN_DELETE_SELF = 0x400
+  glibc.IN_MODIFY = 0x2
+  glibc.IN_MOVED_FROM = 0x40
+  glibc.IN_MOVED_TO = 0x80
+  glibc.IN_MOVE_SELF = 0x800
+  glibc.IN_NONBLOCK = 0x800
+  glibc.IN_OPEN = 0x20
   glibc.MS_BIND = 0x1000
   glibc.MS_REC = 0x4000
+  glibc.SFD_CLOEXEC = 0x80000
+  glibc.SFD_NONBLOCK = 0x800
 
   return glibc
 
@@ -82,13 +125,13 @@ def get_subid_range(subid_path, username, uid):
       subuid_name, subuid_min, subuid_count = line.strip().split(':')
       if subuid_name == username:
         return (int(subuid_min), int(subuid_count))
-      else:
-        try:
-          subuid_uid = int(subuid_name)
-          if subuid_uid == uid:
-            return (int(subuid_min), int(subuid_count))
-        except ValueError:
-          pass
+
+      try:
+        subuid_uid = int(subuid_name)
+        if subuid_uid == uid:
+          return (int(subuid_min), int(subuid_count))
+      except ValueError:
+        pass
 
   raise ValueError("user {}({}) not found in subid file {}".format(
       username, uid, subid_path))
@@ -102,7 +145,7 @@ def write_id_map(id_map_path, id_outside, subid_range):
   setuid-root newuidmap/newgidmap programs exist.
   """
   with open(id_map_path, 'wb') as id_map:
-    logging.debug("Writing : %s (fd=%d)\n", id_map_path, id_map.fileno())
+    logger.debug("Writing : %s (fd=%d)", id_map_path, id_map.fileno())
     id_map.write("{id_inside} {id_outside} {count}\n".format(
         id_inside=0, id_outside=id_outside, count=1))
     id_map.write("{id_inside} {id_outside} {count}\n".format(
@@ -112,15 +155,15 @@ def write_id_map(id_map_path, id_outside, subid_range):
 def write_setgroups(pid):
   setgroups_path = '/proc/{}/setgroups'.format(pid)
   with open(setgroups_path, 'wb') as setgroups:
-    logging.debug("Writing : %s (fd=%d)\n", setgroups_path, setgroups.fileno())
+    logger.debug("Writing : %s (fd=%d)", setgroups_path, setgroups.fileno())
     # NOTE(josh): was previously "deny", but apt-get calls this so we must
     # allow it if we want to use apt-get. Look into this more.
-    setgroups.write("allow\n")
+    setgroups.write(b"allow\n")
 
 
 def set_id_map(idmap_bin, pid, id_outside, subid_range):
   """Set uid_map or gid_map through subprocess calls."""
-  logging.debug("Calling %s\n", idmap_bin)
+  logger.debug("Calling %s", idmap_bin)
   subprocess.check_call(['/usr/bin/{}'.format(idmap_bin), str(pid),
                          '0', str(id_outside), '1',
                          '1', str(subid_range[0]), str(subid_range[1])])
@@ -135,11 +178,11 @@ def make_sure_is_dir(need_dir, source):
 
   if not os.path.isdir(need_dir):
     if os.path.exists(need_dir):
-      logging.warn("removing rootfs bind target %s because it"
-                   " is not a directory\n", need_dir)
+      logger.warning("removing rootfs bind target %s because it"
+                     " is not a directory\n", need_dir)
       os.remove(need_dir)
-    logging.warn("creating rootfs directory %s because it is "
-                 " needed to bind mount %s.\n", need_dir, source)
+    logger.warning("creating rootfs directory %s because it is "
+                   " needed to bind mount %s.\n", need_dir, source)
     os.makedirs(need_dir)
 
 
@@ -150,11 +193,11 @@ def make_sure_is_file(need_path, source):
   """
   make_sure_is_dir(os.path.dirname(need_path), source)
 
-  if not os.path.exists(need_path):
-    logging.warn("creating rootfs regular file %s because it "
-                 " is a requested mount-point for %s\n", need_path, source)
+  if not os.path.lexists(need_path):
+    logger.warning("creating rootfs regular file %s because it "
+                   " is a requested mount-point for %s\n", need_path, source)
     with open(need_path, 'wb') as touchfile:
-      touchfile.write('# written by uchroot')
+      touchfile.write('# written by uchroot'.encode("utf-8"))
 
 
 def enter(read_fd, write_fd, rootfs=None, binds=None, qemu=None, identity=None,
@@ -176,7 +219,7 @@ def enter(read_fd, write_fd, rootfs=None, binds=None, qemu=None, identity=None,
   uid = glibc.getuid()
   gid = glibc.getgid()
 
-  logging.debug("Before unshare, uid=%d, gid=%d\n", uid, gid)
+  logger.debug("Before unshare, uid=%d, gid=%d", uid, gid)
   # ---------------------------------------------------------------------
   #                     Create User Namespace
   # ---------------------------------------------------------------------
@@ -189,23 +232,23 @@ def enter(read_fd, write_fd, rootfs=None, binds=None, qemu=None, identity=None,
 
   # write a uid/pid map
   pid = glibc.getpid()
-  logging.debug("My pid: %d\n", pid)
+  logger.debug("My pid: %d", pid)
 
   # Notify the helper that we have created the new namespace, and we need
   # it to set our uid/gid map
-  logging.debug("Waiting for helper to set my uid/gid map")
-  os.write(write_fd, "#")
+  logger.debug("Waiting for helper to set my uid/gid map")
+  os.write(write_fd, b"#")
 
   # Wait for the helper to finish setting our uid/gid map
   os.read(read_fd, 1)
-  logging.debug("Helper has finished setting my uid/gid map")
+  logger.debug("Helper has finished setting my uid/gid map")
 
   # ---------------------------------------------------------------------
   #                     Create Mount Namespace
   # ---------------------------------------------------------------------
   err = glibc.unshare(glibc.CLONE_NEWNS)
   if err != 0:
-    logging.error('Failed to unshare mount namespace')
+    logger.error('Failed to unshare mount namespace')
 
   null_ptr = ctypes.POINTER(ctypes.c_char)()
   for bind_spec in binds:
@@ -219,9 +262,9 @@ def enter(read_fd, write_fd, rootfs=None, binds=None, qemu=None, identity=None,
 
     dest = dest.lstrip('/')
     rootfs_dest = os.path.join(rootfs, dest)
-    logging.debug('Binding: %s -> %s', source, rootfs_dest)
+    logger.debug('Binding: %s -> %s', source, rootfs_dest)
     assert os.path.exists(source),\
-        "source directory to bind does not exit {}".format(source)
+        "source directory to bind does not exist {}".format(source)
 
     # Create the mountpoint if it is not already in the rootfs
     if os.path.isdir(source):
@@ -232,22 +275,35 @@ def enter(read_fd, write_fd, rootfs=None, binds=None, qemu=None, identity=None,
     if source.lstrip('/') == 'proc':
       # NOTE(josh): user isn't allowed to mount proc without MS_REC, see
       # https://stackoverflow.com/a/23435317
-      result = glibc.mount(source, rootfs_dest, "proc",
+      result = glibc.mount(source.encode("utf-8"),
+                           rootfs_dest.encode("utf-8"), b"proc",
                            glibc.MS_REC | glibc.MS_BIND, null_ptr)
+    elif source.lstrip("/") == "dev/pts":
+      result = glibc.mount(b"/dev/pts",
+                           rootfs_dest.encode("utf-8"), b"devpts",
+                           0, null_ptr)
     else:
-      result = glibc.mount(source, rootfs_dest, null_ptr, glibc.MS_BIND,
-                           null_ptr)
+      # NOTE(josh): MS_REC is needed if the source to bind contains mounted
+      # filesystems somewhere in it's subtree. Otherwise our unpriviledged
+      # mount namespace would be able to see tree's outside of it's
+      # namespace without permission.
+      # TODO(josh): we should probably warn if this is required. It is
+      # rather odd.
+      result = glibc.mount(source.encode("utf-8"),
+                           rootfs_dest.encode("utf-8"), null_ptr,
+                           glibc.MS_BIND | glibc.MS_REC, null_ptr)
     if result == -1:
       err = ctypes.get_errno()
-      logging.warn('Failed to mount %s -> %s [%s](%d) %s',
-                   source, rootfs_dest, errno.errorcode.get(err, '??'), err,
-                   os.strerror(err))
+      logger.warning('Failed to mount %s -> %s [%s](%d) %s',
+                     source, rootfs_dest,
+                     errno.errorcode.get(err, '??'), err,
+                     os.strerror(err))
 
   if qemu:
     dest = qemu.lstrip('/')
     rootfs_dest = os.path.join(rootfs, dest)
     make_sure_is_dir(os.path.dirname(rootfs_dest), qemu)
-    logging.debug("Installing %s", qemu)
+    logger.debug("Installing %s", qemu)
     with open(rootfs_dest, 'wb') as outfile:
       with open(qemu, 'rb') as infile:
         chunk = infile.read(1024 * 4)
@@ -262,22 +318,23 @@ def enter(read_fd, write_fd, rootfs=None, binds=None, qemu=None, identity=None,
   # ---------------------------------------------------------------------
 
   # Now chroot into the desired directory
-  err = glibc.chroot(rootfs)
+  err = glibc.chroot(rootfs.encode("utf-8"))
   if err != 0:
-    logging.error("Failed to chroot")
+    logger.error("Failed to chroot")
     raise OSError(err, "Failed to chroot", rootfs)
 
   # Set the cwd
   os.chdir(cwd)
 
-  # Now drop admin in our namespace
-  err = glibc.setresuid(identity[0], identity[0], identity[0])
-  if err != 0:
-    logging.error("Failed to set uid")
-
+  # Now drop admin in our namespace. Drop gid first, since losing UID privelidge
+  # will prevent us from dropping it second.
   err = glibc.setresgid(identity[1], identity[1], identity[1])
   if err:
-    logging.error("Failed to set gid\n")
+    logger.error("Failed to set gid")
+
+  err = glibc.setresuid(identity[0], identity[0], identity[0])
+  if err != 0:
+    logger.error("Failed to set uid")
 
 
 def validate_id_range(requested_range, allowed_range):
@@ -317,7 +374,10 @@ def set_userns_idmap(chroot_pid, uid_range, gid_range):
     gid_range = subgid_range
 
   set_id_map('newuidmap', chroot_pid, uid, uid_range)
-  write_setgroups(chroot_pid)
+  try:
+    write_setgroups(chroot_pid)
+  except IOError:
+    logger.exception("Failed to write setgroups")
   set_id_map('newgidmap', chroot_pid, gid, gid_range)
 
 
@@ -347,7 +407,7 @@ def main(rootfs, binds=None, qemu=None, identity=None, uid_range=None,
     # Set the uid/gid map using the setuid helper programs
     set_userns_idmap(parent_pid, uid_range, gid_range)
     # Inform the primary that we have finished setting its uid/gid map.
-    os.write(helper_write_fd, '#')
+    os.write(helper_write_fd, b'#')
 
     # NOTE(josh): using sys.exit() will interfere with the interpreter in the
     # parent process.
@@ -361,11 +421,12 @@ def main(rootfs, binds=None, qemu=None, identity=None, uid_range=None,
 def process_environment(env_dict):
   """Given an environment dictionary, merge any lists with pathsep and return
      the new dictionary."""
+
   out_dict = {}
-  for key, value in env_dict.iteritems():
+  for key, value in env_dict.items():
     if isinstance(value, list):
       out_dict[key] = ':'.join(value)
-    elif isinstance(value, (str, unicode)):
+    elif isinstance(value, STRING_TYPES):
       out_dict[key] = value
     else:
       out_dict[key] = str(value)
@@ -401,12 +462,16 @@ class ConfigObject(object):
   @classmethod
   def get_field_names(cls):
     """
+    Return a list of field names, extracted from kwargs to __init__().
     The order of fields in the tuple representation is the same as the order
     of the fields in the __init__ function
     """
-
     # NOTE(josh): args[0] is `self`
-    return inspect.getargspec(cls.__init__).args[1:]
+    if sys.version_info >= (3, 5, 0):
+      sig = getattr(inspect, 'signature')(cls.__init__)
+      return [field for field, _ in list(sig.parameters.items())[1:-1]]
+
+    return getattr(inspect, 'getargspec')(cls.__init__).args[1:]
 
   def as_dict(self):
     """
@@ -433,13 +498,19 @@ class Exec(ConfigObject):
   of an exec call.
   """
 
-  def __init__(self, exbin=None, argv=None, env=None, **_):
+  def __init__(self, exbin=None, argv=None, env=None,
+               **_):  # pylint: disable=W0613
+    logger.debug("Exec({}, {}, {})".format(exbin, argv, env))
     if exbin:
       self.exbin = exbin
       if not argv:
         argv = [exbin.split('/')[-1]]
     else:
-      self.exbin = DEFAULT_BIN
+      if argv:
+        self.exbin = argv[0]
+      else:
+        self.exbin = DEFAULT_BIN
+        argv = [os.path.basename(DEFAULT_BIN)]
 
     if argv:
       self.argv = argv
@@ -452,11 +523,14 @@ class Exec(ConfigObject):
       self.env = process_environment(dict(PATH=DEFAULT_PATH))
 
   def __call__(self):
-    logging.debug('Executing %s', self.exbin)
-    return os.execve(self.exbin, self.argv, self.env)
+    logger.debug('Executing %s', self.exbin)
+    if "/" in self.exbin:
+      return os.execve(self.exbin, self.argv, self.env)
+
+    return os.execvpe(self.exbin, self.argv, self.env)
 
   def subprocess(self, preexec_fn=None):
-    logging.debug('Executing %s', self.exbin)
+    logger.debug('Subprocessing %s', self.exbin)
     return subprocess.call(self.argv, executable=self.exbin, env=self.env,
                            preexec_fn=preexec_fn)
 
@@ -474,7 +548,45 @@ class Main(ConfigObject):
                uid_range=None,
                gid_range=None,
                cwd=None,
-               **_):
+               extra_preexec_fn=None,
+               **_):  # pylint: disable=W0613
+    self.rootfs = rootfs
+    self.binds = get_default(binds, [])
+    self.qemu = qemu
+    self.identity = get_default(identity, (0, 0))
+
+    uid = os.getuid()
+    username = pwd.getpwuid(uid)[0]
+    self.uid_range = get_default(
+        uid_range, get_subid_range('/etc/subuid', username, uid))
+    self.gid_range = get_default(
+        gid_range, get_subid_range('/etc/subgid', username, uid))
+    self.cwd = get_default(cwd, '/')
+    self.extra_preexec_fn = extra_preexec_fn
+
+  def __call__(self):
+    kwargs = self.as_dict()
+    kwargs.pop("extra_preexec_fn", None)
+    main(**kwargs)
+    if self.extra_preexec_fn is not None:
+      self.extra_preexec_fn()
+
+
+class Container(ConfigObject):
+  """
+  Simple object to maintain the configuration of a chroot between subprocess
+  calls. Has the same interface as the subprocess module.
+  """
+
+  def __init__(self,
+               rootfs=None,
+               binds=None,
+               qemu=None,
+               identity=None,
+               uid_range=None,
+               gid_range=None,
+               cwd=None,
+               **_):  # pylint: disable=W0613
     self.rootfs = rootfs
     self.binds = get_default(binds, [])
     self.qemu = qemu
@@ -488,8 +600,25 @@ class Main(ConfigObject):
         gid_range, get_subid_range('/etc/subgid', username, uid))
     self.cwd = get_default(cwd, '/')
 
-  def __call__(self):
-    main(**self.as_dict())
+  def _callfun(self, funname, *args, **kwargs):
+    uchroot_args = self.as_dict()
+    uchroot_args["extra_preexec_fn"] = kwargs.pop("preexec_fn", None)
+    uchroot_args["cwd"] = kwargs.pop("cwd", "/")
+
+    kwargs["preexec_fn"] = Main(**uchroot_args)
+    return getattr(subprocess, funname)(*args, **kwargs)
+
+  def Popen(self, *args, **kwargs):  # pylint: disable=C0103
+    return self._callfun("Popen", *args, **kwargs)
+
+  def call(self, *args, **kwargs):
+    return self._callfun("call", *args, **kwargs)
+
+  def check_call(self, *args, **kwargs):
+    return self._callfun("check_call", *args, **kwargs)
+
+  def check_output(self, *args, **kwargs):
+    return self._callfun("check_output", *args, **kwargs)
 
 
 def parse_config(config_path):
@@ -511,7 +640,7 @@ def parse_config(config_path):
   try:
     return json.loads(stripped_json_str)
   except (ValueError, KeyError):
-    logging.error('Failed to decode json:\n%s', stripped_json_str)
+    logger.error('Failed to decode json:%s', stripped_json_str)
     raise
 
 
